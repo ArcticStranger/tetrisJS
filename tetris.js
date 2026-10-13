@@ -73,6 +73,9 @@ const SIDEBAR_WIDTH_BLOCKS = 6;
 
 const MAX_DT = 100;
 
+const INPUT_REPEAT_THRESHOLD = 400;
+const INPUT_REPEAT_INTERVAL = 5;
+
 const KEY_TO_INPUT_TYPE = {
   ArrowLeft: 'moveLeft',
   ArrowRight: 'moveRight',
@@ -93,6 +96,10 @@ const CANVAS_WIDTH = GRID_WIDTH + SIDEBAR_BORDER + SIDEBAR_WIDTH;
 const CANVAS_HEIGHT = GRID_HEIGHT;
 
 const BLOCK_EMPTY = -1;
+
+const INPUT_STATE_INITIAL = 0;
+const INPUT_STATE_CHARGING = 1;
+const INPUT_STATE_REPEATING = 2;
 
 function initCanvas() {
   const canvas = document.getElementById('game');
@@ -153,7 +160,7 @@ function canGridFitShape(grid, shape, shapeX, shapeY) {
         return true;
       }
 
-      if (gridY >= gridLength) {
+      if (gridY >= grid.length) {
         return false;
       }
 
@@ -178,28 +185,157 @@ function moveCurrentPiece(grid, currentPiece, moveX, moveY) {
     currentPiece.position.y += moveY;
   }
 
+  return canMove;
+}
+
+function rotate(shape) {
+  return Array.from({ length: shape[0].length }, (_, i) =>
+    Array.from(
+      { length: shape.length },
+      (_, j) => shape[shape.length - 1 - j][i]
+    )
+  );
+}
+
+function rotateCurrentPiece(grid, currentPiece) {
+  const { shape, position } = currentPiece;
+
+  const newShape = rotate(shape);
+
+  if (canGridFitShape(grid, newShape, position.x, position.y)) {
+    currentPiece.shape = newShape;
+  }
+}
+
+function handleInputState(state, dt) {
+  if (!input) {
+    return false;
+  }
+
+  input.timer += dt;
+
+  switch (input.state) {
+    case INPUT_STATE_INITIAL:
+      input.state = INPUT_STATE_CHARGING;
+      return true;
+
+    case INPUT_STATE_CHARGING:
+      const isCharged = input.timer >= INPUT_REPEAT_THRESHOLD;
+      if (isCharged) {
+        input.state = INPUT_STATE_REPEATING;
+        input.timer = 0;
+      }
+
+      return isCharged;
+
+    case INPUT_STATE_REPEATING:
+      const shouldRepeat = input.timer >= INPUT_REPEAT_INTERVAL;
+      if (shouldRepeat) {
+        input.timer = 0;
+      }
+
+      return shouldRepeat;
+  }
 }
 
 function updateCurrentPiece(state, inputs, dt) {
+  const { grid, currentPiece } = state;
+
+  const isInputActive = (inputType) => handleInputState(inputs[inputType], dt);
+
   if (inputs.moveLeft) {
-    moveCurrentPiece(grid, state.currentPiece, -1, 0);
+    moveCurrentPiece(grid, currentPiece, -1, 0);
   }
   if (inputs.moveRight) {
-    moveCurrentPiece(grid, state.currentPiece, 1, 0);
+    moveCurrentPiece(grid, currentPiece, 1, 0);
   }
   if (inputs.moveDown) {
-    moveCurrentPiece(grid, state.currentPiece, 0, 1);
+    moveCurrentPieceDown(state);
   }
   if (inputs.rotate) {
-
+    rotateCurrentPiece(grid, currentPiece);
   }
   if (inputs.hardDrop) {
+    while (moveCurrentPieceDown(state)) {
 
+    }
   }
 }
 
-function updateGravity(state, dt) {
+function attachToGrid(grid, currentPiece) {
+  const { shapeId, shape, position } = currentPiece;
 
+  for (let i = 0; i < shape.length; i++) {
+    for (let j = 0; j < shape[0].length; j++) {
+      if (shape[i][j]) {
+        grid[position.y + i][position.x + j] = shapeId;
+      }
+    }
+  }
+}
+
+function clearCompleteLines(grid) {
+  let clearedLines = 0;
+
+  for (let i = grid.length - 1; i >= 0; i--) {
+    if (grid[i].every(cell => cell !== BLOCK_EMPTY)) {
+      clearedLines++;
+    } else if (clearedLines > 0) {
+      grid[i + clearedLines] = [...grid[i]];
+    }
+  }
+
+  for (let i = 0; i < clearedLines; i++) {
+    grid[i].fill(BLOCK_EMPTY);
+  }
+
+  return clearedLines;
+}
+
+function handleCurrentPieceLanding(state) {
+  // attach the piece to grid
+  attachToGrid(state.grid, state.currentPiece);
+  // clear complete lines
+  const clearedLines = clearCompleteLines(state.grid);
+  state.score += clearedLines;
+
+  const newPiece = createCurrentPiece(state.nextShapeId);
+  const { shape, position } = newPiece;
+
+  if (canGridFitShape(state.grid, shape, position.x, position.y)) {
+    state.currentPiece = newPiece;
+    state.nextShapeId = getRandomShapeId();
+  } else {
+    state.isGameOver = true;
+  }
+  // update score
+
+  // create new piece
+
+  // if it doesnt fit - game over 
+}
+
+function moveCurrentPieceDown(state) {
+  state.gravity.progress = 0;
+  const didMove = moveCurrentPiece(state.grid, state.currentPiece, 0, 1);
+
+  if (!didMove) {
+    handleCurrentPieceLanding(state)
+  }
+
+}
+
+function updateGravity(state, dt) {
+  state.gravity.speed += GRAVITY_ACCELERATION * dt;
+  state.gravity.progress += state.gravity.speed * dt;
+
+  if (state.gravity.progress >= GRAVITY_THRESHOLD) {
+    moveCurrentPieceDown(state);
+  }
+}
+
+function resetGameState(state) {
+  Object.assign(state, getInitialState());
 }
 
 
@@ -207,6 +343,7 @@ function update(state, inputs, dt) {
   if (state.isGameOver) {
     if (inputs.restart) {
       // reset game state
+      resetGameState(state);
     }
   } else {
     updateCurrentPiece(state, inputs, dt);
@@ -241,7 +378,7 @@ function render(ctx, state) {
     for (let j = 0; j < grid[0].length; j++) {
       const colorId = grid[i][j];
 
-      const color = colorId === BLOCK_EMPTY ? COLOR_EMPTY_BLOCK : SHAPE_COLORS[shapeId];
+      const color = colorId === BLOCK_EMPTY ? COLOR_EMPTY_BLOCK : SHAPE_COLORS[colorId];
 
       drawBlock(ctx, color, j * BLOCK_SIZE, i * BLOCK_SIZE);
     }
@@ -298,10 +435,10 @@ function startCollectingInputs(inputs) {
     }
   };
   window.addEventListener('keydown', (event) => {
-    handleKeyEvent(event, true)
+    handleKeyEvent(event, { state: INPUT_STATE_INITIAL, timer: 0 })
   })
   window.addEventListener('keyup', (event) => {
-    handleKeyEvent(event, false)
+    handleKeyEvent(event, undefined)
   })
 }
 
